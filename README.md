@@ -4,35 +4,32 @@ A single-file Streamlit teaching simulation of epsilon-greedy, UCB, and Thompson
 
 ## Run locally
 
-Use Python 3.13, matching the tested environment and Cloud deployment setting.
-From this repository's root:
+Use Python 3.13 and [uv](https://docs.astral.sh/uv/). From this folder:
 
 ```sh
-python3.13 -m venv .venv
+uv venv --python 3.13
+uv pip install -r requirements.txt
 source .venv/bin/activate
-python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Open the localhost address printed by Streamlit. With uv, an alternative is
-`uv run --python 3.13 --with-requirements requirements.txt streamlit run app.py`.
+Open the localhost address printed by Streamlit. On subsequent runs, activate
+`.venv` and run the final command. The local environment is excluded from Git.
+No API keys, external datasets, or database are required.
 
-## Deploy and maintain
+Streamlit Community Cloud installs `requirements.txt` in its own environment.
+Use `app.py` as the entry point and select Python 3.13 in Advanced settings.
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for GitHub setup, exact Streamlit Community
-Cloud settings, and the update/rollback workflow. Entry point: `app.py`.
-No API keys, external datasets, database, or Linux system packages are required.
+## Development
 
-Run checks before committing changes:
+With the environment activated, run:
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs the same tests on pushes and pull requests using Python 3.13
-on Linux. Tests cover decision stability, UCB initialization, repeatable runs,
-contextual updates, session limits, and Streamlit interactions. The four direct
-runtime dependencies are pinned to tested versions; update them deliberately.
+GitHub Actions runs these checks on pushes and pull requests. Dependencies are
+pinned to tested versions; update them deliberately and rerun the checks.
 
 ## Explore
 
