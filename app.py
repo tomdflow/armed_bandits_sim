@@ -250,7 +250,6 @@ def show_beta_panels(run: dict, decision: dict) -> None:
             figures[i].update_yaxes(range=[0, y_max])
             st.plotly_chart(figures[i], width="stretch", key=f"beta_arm_{i}")
             st.caption(f"Draw: {decision['scores'][i]:.2%} · {int(run['clicks'][i])} clicks / {int(run['counts'][i])} views")
-    st.caption("Blue-tinted panel = ad that receives your next Click / No click outcome. Diamonds = sampled CTRs. All three panels use the same scales.")
 
 
 def weight_chart(run: dict, decision: dict, arm: int, weight: int) -> go.Figure:
@@ -278,11 +277,30 @@ def show_contextual(show_truth: bool) -> None:
     if "contextual" not in st.session_state:
         st.session_state.contextual = new_contextual_run(st.session_state.config["seed"])
     run = st.session_state.contextual
-    st.subheader("Contextual Thompson: sample weights, then use the visitor's features")
-    st.write("Each ad gets a sampled baseline and a sampled returning effect. Switching visitor type keeps those weights fixed; only the input changes.")
-    st.latex(r"\text{sampled score}_i=\widetilde\theta_{i,0}+\mathrm{returning}\times\widetilde\theta_{i,1}")
+    st.subheader("Contextual Thompson", help="Sample weights for each ad, then use the visitor’s features to choose. Switching visitor type keeps the sampled model fixed.")
     visitor = st.radio("Next visitor type", ["New", "Returning"], index=1, horizontal=True, key="contextual_type")
     returning = int(visitor == "Returning")
+    c1, c2, c3 = st.columns(3)
+    full = len(run["history"]) >= MAX_VISITORS
+    if c1.button("Click", key="ctx_click", disabled=full):
+        record_contextual(run, returning, 1)
+        st.rerun()
+    if c2.button("No click", key="ctx_miss", disabled=full):
+        record_contextual(run, returning, 0)
+        st.rerun()
+    if c3.button("Simulate 1 visitor", key="ctx_auto", disabled=full, type="primary", help="Simulate an outcome for the selected visitor type and ad."):
+        record_contextual(run, returning)
+        st.rerun()
+    batch_col, run_col = st.columns([3, 1], vertical_alignment="bottom")
+    batch = batch_col.select_slider("Automatic contextual visitors", options=[10, 50, 100, 500, 1000], value=100, key="ctx_batch")
+    mixed = st.checkbox("Alternate new and returning visitors in the batch", value=True, key="ctx_mixed", help="When enabled, batches alternate New and Returning; otherwise every visitor uses the selected type.")
+    if run_col.button(f"Simulate {batch} visitors", key="ctx_run", disabled=full):
+        for _ in range(min(batch, MAX_VISITORS-len(run["history"]))):
+            context = len(run["history"]) % 2 if mixed else returning
+            record_contextual(run, context)
+        st.rerun()
+    if full:
+        st.info("Session limit reached. Download history before resetting.")
     buttons = st.columns(2)
     if buttons[0].button("Draw another plausible model", key="ctx_redraw"):
         run["pending"] = None
@@ -290,23 +308,34 @@ def show_contextual(show_truth: bool) -> None:
     if buttons[1].button("Use the worked-example weights", key="ctx_example"):
         run["pending"] = {"weights": np.array([[.09, .08], [.11, .02], [.07, .03]]),
                           "source": "Worked-example illustration"}
+    if st.button("Reset contextual history", key="ctx_reset", help="Clear this tab’s history, preserving its true rates. Download CSV first."):
+        fresh = new_contextual_run(st.session_state.config["seed"])
+        fresh["rates"] = run["rates"].copy()
+        st.session_state.contextual = fresh
+        st.rerun()
+    with st.popover("How it works", icon=":material/info:", help="Open the contextual formula and model explanation."):
+        st.latex(r"\text{score}_i=\widetilde\theta_{i,0}+x\times\widetilde\theta_{i,1}")
+        st.write("This is an exact click model for the special case of one binary feature (new or returning). Each ad learns a new-visitor CTR and a returning-visitor CTR, each with a Beta(1,1) starting prior. It draws those two CTRs, then sets baseline = new CTR and returning effect = returning CTR − new CTR.")
+        st.write("The plotted effect distribution is the distribution of that difference. The two weight distributions are marginals of a joint belief: baseline and effect are related, so they are not drawn independently. Their sum always gives a valid returning-visitor CTR. Curves for the effect use deterministic numerical approximation; CTR sampling uses the exact Beta models.")
+        st.write("A click or non-click updates only the selected ad's model for that visitor type. A new visitor changes the baseline belief and therefore the derived effect belief; a returning visitor updates the returning CTR and therefore the effect belief. The dashed curve shows the previous marginal for the last updated ad.")
+        st.write("With richer features, linear Thompson implementations often use Gaussian regression models; Gaussian weights and linear scores are not automatically valid click probabilities. This binary-feature example avoids that issue and preserves the baseline + effect arithmetic.")
+        st.markdown("Linear contextual bandits also have UCB strategies: [LinUCB / linear contextual UCB](https://proceedings.mlr.press/v15/chu11a.html) and [linear Thompson sampling](https://proceedings.mlr.press/v28/agrawal13.html) are both established approaches.")
     decision = contextual_decision(run, returning)
     if decision["source"] == "Worked-example illustration":
-        st.info("The marked weights are the fixed teaching example (A: 0.09 + 0.08; B: 0.11 + 0.02). Use 'Draw another plausible model' to sample from the current beliefs. The example does not change those beliefs.")
-    st.success(f"Next visitor: {visitor.lower()} → show {ARMS[decision['arm']]} (sampled score {decision['scores'][decision['arm']]:.2%}). This is the ad your next outcome updates.")
+        st.caption("Worked-example weights · Draw another model to sample from the current beliefs.")
+    st.success(f"Next visitor: {visitor.lower()} → show {ARMS[decision['arm']]} · score {decision['scores'][decision['arm']]:.2%}")
     rows = []
     for i, label in enumerate(ARMS):
         b, e = decision["weights"][i]
-        rows.append({"Next visitor": "← selected" if i == decision["arm"] else "",
+        rows.append({"Next visitor": "selected →" if i == decision["arm"] else "",
                      "Ad": label, "Sampled baseline (θ₀)": f"{b:.4f}",
                      "Returning feature (x)": returning, "Sampled returning effect (θ₁)": f"{e:+.4f}",
                      "Contribution = x × θ₁": f"{returning} × ({e:+.4f}) = {returning*e:+.4f}",
                      "Calculation = θ₀ + x × θ₁": f"{b:.4f} + ({returning*e:+.4f}) = {decision['scores'][i]:.4f}",
                      "Next decision value": f"{decision['scores'][i]:.4f}"})
+    st.subheader("Decision breakdown", help="Baseline + (visitor feature × returning effect) = score. New: x = 0; returning: x = 1. Display values are rounded; selection uses full precision.")
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    st.caption("Read left to right: baseline + (visitor feature × returning effect) = decision score. New visitors have x = 0; returning visitors have x = 1. Values are rounded for display; selection uses full precision.")
-    st.subheader("Distributions behind the sampled weights")
-    st.caption("Each column is one ad; each row is one weight. Diamonds mark the weights used above. Blue tint identifies the selected ad. Effect is a change in probability: +0.08 means +8 percentage points.")
+    st.subheader("Weight distributions", help="Columns are ads; rows are weights. Diamonds show current draws; blue tint marks the selected ad. Effect is a probability change: +0.08 means +8 percentage points. Dashed curves show beliefs before the last outcome.")
     for weight, heading in [(0, "Baseline-weight distributions"), (1, "Returning-effect distributions")]:
         st.markdown(f"**{heading}**")
         figures = [weight_chart(run, decision, i, weight) for i in range(3)]
@@ -316,35 +345,8 @@ def show_contextual(show_truth: bool) -> None:
                 st.markdown(f"**{ARMS[i]}{' — SELECTED' if i == decision['arm'] else ''}**")
                 figures[i].update_yaxes(range=[0, y_max])
                 st.plotly_chart(figures[i], width="stretch", key=f"ctx_weight_{weight}_{i}")
-    with st.expander("How these weight distributions are learned"):
-        st.write("This is an exact click model for the special case of one binary feature (new or returning). Each ad learns a new-visitor CTR and a returning-visitor CTR, each with a Beta(1,1) starting prior. It draws those two CTRs, then sets baseline = new CTR and returning effect = returning CTR − new CTR.")
-        st.write("The plotted effect distribution is the distribution of that difference. The two weight distributions are marginals of a joint belief: baseline and effect are related, so they are not drawn independently. Their sum always gives a valid returning-visitor CTR. Curves for the effect use deterministic numerical approximation; CTR sampling uses the exact Beta models.")
-        st.write("A click or non-click updates only the selected ad's model for that visitor type. A new visitor changes the baseline belief and therefore the derived effect belief; a returning visitor updates the returning CTR and therefore the effect belief. The dashed curve shows the previous marginal for the last updated ad.")
-        st.write("With richer features, linear Thompson implementations often use Gaussian regression models; Gaussian weights and linear scores are not automatically valid click probabilities. This binary-feature example avoids that issue and preserves the baseline + effect arithmetic.")
-        st.markdown("Linear contextual bandits also have UCB strategies: [LinUCB / linear contextual UCB](https://proceedings.mlr.press/v15/chu11a.html) and [linear Thompson sampling](https://proceedings.mlr.press/v28/agrawal13.html) are both established approaches.")
-    st.write("**Record this visitor's outcome**")
-    c1, c2, c3 = st.columns(3)
-    full = len(run["history"]) >= MAX_VISITORS
-    if c1.button("Click", key="ctx_click", disabled=full):
-        record_contextual(run, returning, 1)
-        st.rerun()
-    if c2.button("No click", key="ctx_miss", disabled=full):
-        record_contextual(run, returning, 0)
-        st.rerun()
-    if c3.button("Simulate 1 visitor", key="ctx_auto", disabled=full):
-        record_contextual(run, returning)
-        st.rerun()
-    batch = st.select_slider("Automatic contextual visitors", options=[10, 50, 100, 500, 1000], value=100, key="ctx_batch")
-    mixed = st.checkbox("Alternate new and returning visitors in the batch", value=True, key="ctx_mixed")
-    if st.button(f"Simulate {batch} contextual visitors", key="ctx_run", disabled=full):
-        for _ in range(min(batch, MAX_VISITORS-len(run["history"]))):
-            context = len(run["history"]) % 2 if mixed else returning
-            record_contextual(run, context)
-        st.rerun()
-    if full:
-        st.info("Session limit reached. Download history before resetting.")
     if show_truth:
-        st.caption("Contextual simulator's true rates: " + " · ".join(f"{a}: new {run['rates'][i,0]:.0%}, returning {run['rates'][i,1]:.0%}" for i, a in enumerate(ARMS)) + ". These are separate from the regular bandit settings.")
+        st.caption("Contextual simulator's true rates: " + " · ".join(f"{a}: new {run['rates'][i,0]:.0%}, returning {run['rates'][i,1]:.0%}" for i, a in enumerate(ARMS)))
     with st.expander("Contextual simulator settings"):
         with st.form("ctx_settings"):
             rates = np.zeros((3, 2))
@@ -359,13 +361,7 @@ def show_contextual(show_truth: bool) -> None:
             fresh["rates"] = rates
             st.session_state.contextual = fresh
             st.rerun()
-    if st.button("Reset contextual history", key="ctx_reset"):
-        fresh = new_contextual_run(st.session_state.config["seed"])
-        fresh["rates"] = run["rates"].copy()
-        st.session_state.contextual = fresh
-        st.rerun()
-    st.caption("This tab has its own history. Applying the global settings or resetting all histories also resets it. Download CSV before resetting.")
-    st.subheader("Contextual click history")
+    st.subheader("Contextual click history", help="This tab has its own history. Global settings/reset also clears it. Download CSV to keep a run.")
     if not run["history"]:
         st.info("Record an outcome to see learning for the selected ad and visitor type.")
         return
@@ -385,7 +381,7 @@ def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.Data
     for i, name in enumerate(ARMS):
         n, clicks = int(run["counts"][i]), int(run["clicks"][i])
         mean, score = float(decision["means"][i]), float(decision["scores"][i])
-        row = {"Next visitor": "← selected" if decision["arm"] == i else "",
+        row = {"Next visitor": "selected →" if decision["arm"] == i else "",
                "Ad": name, "Views (n)": n, "Clicks": clicks, "Non-clicks": n-clicks,
                "CTR calculation": f"{clicks} / {n} = {mean:.4f}" if n else "No views → estimate 0",
                "Observed CTR": f"{mean:.2%}" if n else "No observations"}
@@ -430,60 +426,61 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     run = st.session_state.runs[strategy]
     decision = choose(run, strategy, config)
     prefix = strategy.replace(" ", "_")
-    if strategy == "Epsilon-greedy":
-        st.write(f"With probability {config['epsilon']:.0%}, choose an ad uniformly at random. Otherwise choose the highest observed CTR.")
-        st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad u\sim\mathrm{Uniform}(0,1):\quad u<\epsilon\Rightarrow\mathrm{explore},\quad u\geq\epsilon\Rightarrow\mathrm{exploit}")
-        st.caption("Untried ads start with an estimate of 0; ties are broken randomly. A random exploration choice can also pick the current leader.")
-    elif strategy == "UCB":
-        st.write("Choose the largest observed CTR + uncertainty bonus. First, show each ad once.")
-        st.latex(r"\mathrm{score}_i=\widehat p_i+c\sqrt{\frac{2\ln(\max(2,t))}{n_i}}")
-        st.caption("t is the upcoming visitor number; n is that ad's views. The score is an optimistic index and can exceed 1; it is not a probability.")
-    else:
-        st.write("Draw one plausible click rate for each ad, then choose the largest draw. The diamonds show the next visitor's draws.")
-        st.caption("Horizontal axis: possible true CTR. Higher density means more belief per unit of CTR; interval probability is area under the curve. The curves each have total area 1. The dashed line shows the last updated ad before its latest update.")
-        st.latex(r"p_i\mid\mathrm{history}\sim\operatorname{Beta}(1+\mathrm{clicks}_i,\;1+\mathrm{nonclicks}_i)")
-    st.subheader(f"Next visitor: show {ARMS[decision['arm']]}")
-    st.caption(decision["reason"] + ". This choice stays fixed until you record an outcome.")
-    if strategy == "Thompson sampling":
-        show_beta_panels(run, decision)
-    else:
-        st.plotly_chart(decision_chart(run, strategy, decision), width="stretch", key=f"chart_{prefix}")
-    st.markdown("**Current decision, step by step**")
-    st.dataframe(table_for(run, decision, strategy, config), hide_index=True, width="stretch")
-    if strategy == "Thompson sampling":
-        st.caption("Read left to right: counts → α and β → Beta belief → random draw → decision. The Beta mean summarizes the belief; the next decision uses the sampled draw. Values are rounded for display; selection uses full precision.")
-    elif strategy == "UCB":
-        st.caption("Read left to right: observed CTR → t and c → logarithm → divide by n → square root → uncertainty bonus → sum. For n = 0, initialization takes priority; no division is performed. Scroll horizontally to see all steps. Values are rounded for display; selection uses full precision.")
-    else:
-        st.caption("One shared uniform draw u between 0 and 1 decides the branch for this visitor. If u < ε, pick an ad uniformly at random; otherwise use the highest CTR estimate. The next decision value is the CTR estimate, which ranks ads only in the exploitation branch. Values are rounded for display; selection uses full precision.")
-    if show_truth:
-        st.caption("Simulator's true rates: " + " · ".join(f"{a}: {p:.1%}" for a, p in zip(ARMS, config["rates"])) + ". The algorithms never read these rates.")
-    st.write("**Record the next visitor**")
+    st.subheader(f"Next visitor: {ARMS[decision['arm']]}",
+                 help=decision["reason"] + ". The choice stays fixed until you record an outcome.")
     c1, c2, c3 = st.columns(3)
     full = len(run["history"]) >= MAX_VISITORS
-    if c1.button("Click", key=f"click_{prefix}", disabled=full):
+    if c1.button("Click", key=f"click_{prefix}", disabled=full, help="Record a manual outcome for the selected ad."):
         record(run, strategy, config, 1)
         st.rerun()
-    if c2.button("No click", key=f"miss_{prefix}", disabled=full):
+    if c2.button("No click", key=f"miss_{prefix}", disabled=full, help="Record a manual outcome for the selected ad."):
         record(run, strategy, config, 0)
         st.rerun()
-    if c3.button("Simulate 1 visitor", key=f"auto_{prefix}", disabled=full):
+    if c3.button("Simulate 1 visitor", key=f"auto_{prefix}", disabled=full, type="primary", help="Generate one click or non-click using the simulator’s true rate."):
         record(run, strategy, config)
         st.rerun()
-    batch = st.select_slider("Automatic visitors", options=[10, 50, 100, 500, 1000], value=100, key=f"batch_{prefix}")
-    if st.button(f"Simulate {batch} visitors", key=f"run_{prefix}", disabled=full):
+    batch_col, run_col = st.columns([3, 1], vertical_alignment="bottom")
+    batch = batch_col.select_slider("Automatic visitors", options=[10, 50, 100, 500, 1000], value=100, key=f"batch_{prefix}")
+    if run_col.button(f"Simulate {batch} visitors", key=f"run_{prefix}", disabled=full):
         for _ in range(min(batch, MAX_VISITORS-len(run["history"]))):
             record(run, strategy, config)
         st.rerun()
     if full:
         st.info("Session limit reached (20,000 visitors per strategy). Download history before resetting.")
-    st.subheader("Click history")
+    with st.popover("How it works", icon=":material/info:",
+                    help="Open the formula, strategy explanation, and chart-reading tips."):
+        if strategy == "Epsilon-greedy":
+            st.write(f"With probability {config['epsilon']:.0%}, choose an ad uniformly at random. Otherwise choose the highest observed CTR.")
+            st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad u\sim\mathrm{Uniform}(0,1):\quad u<\epsilon\Rightarrow\mathrm{explore},\quad u\geq\epsilon\Rightarrow\mathrm{exploit}")
+            st.caption("Untried ads start with an estimate of 0; ties are broken randomly. A random exploration choice can also pick the current leader.")
+        elif strategy == "UCB":
+            st.write("Choose the largest observed CTR + uncertainty bonus. First, show each ad once.")
+            st.latex(r"\mathrm{score}_i=\widehat p_i+c\sqrt{\frac{2\ln(\max(2,t))}{n_i}}")
+            st.caption("t is the upcoming visitor number; n is that ad's views. The score is an optimistic index and can exceed 1; it is not a probability.")
+        else:
+            st.write("Draw one plausible click rate for each ad, then choose the largest draw. The diamonds show the next visitor's draws.")
+            st.caption("Horizontal axis: possible true CTR. Higher density means more belief per unit of CTR; interval probability is area under the curve. The curves each have total area 1. The dashed line shows the last updated ad before its latest update.")
+            st.latex(r"p_i\mid\mathrm{history}\sim\operatorname{Beta}(1+\mathrm{clicks}_i,\;1+\mathrm{nonclicks}_i)")
+    if strategy == "Thompson sampling":
+        show_beta_panels(run, decision)
+    else:
+        st.plotly_chart(decision_chart(run, strategy, decision), width="stretch", key=f"chart_{prefix}")
+    if strategy == "Thompson sampling":
+        table_help = "Read left to right: counts → α and β → Beta belief → random draw → decision. The Beta mean summarizes the belief; the next decision uses the sampled draw. Values are rounded for display; selection uses full precision."
+    elif strategy == "UCB":
+        table_help = "Read left to right: observed CTR → t and c → logarithm → divide by n → square root → uncertainty bonus → sum. For n = 0, initialization takes priority; no division is performed. Scroll horizontally to see all steps. Values are rounded for display; selection uses full precision."
+    else:
+        table_help = "One shared uniform draw u between 0 and 1 decides the branch for this visitor. If u < ε, pick an ad uniformly at random; otherwise use the highest CTR estimate. The next decision value is the CTR estimate, which ranks ads only in the exploitation branch. Values are rounded for display; selection uses full precision."
+    st.subheader("Decision breakdown", help=table_help)
+    st.dataframe(table_for(run, decision, strategy, config), hide_index=True, width="stretch")
+    if show_truth:
+        st.caption("Simulator's true rates: " + " · ".join(f"{a}: {p:.1%}" for a, p in zip(ARMS, config["rates"])))
+    st.subheader("Click history", help="Newest visitor first. CTR after includes all previous observations for that ad. Download CSV to keep a run; resetting or session loss clears it.")
     if not run["history"]:
         st.info("Record a click or non-click to see the first update.")
         return
     latest = run["history"][-1]
     st.write(f"**Last visitor #{latest['Visitor']}: {latest['Ad']} → {latest['Outcome']}** ({latest['Source'].lower()})")
-    st.caption(f"For that ad: {latest['Clicks before']}/{latest['Views before']} → {latest['Clicks after']}/{latest['Views after']} clicks/views. All previous observations remain in the update.")
     total = len(run["history"])
     m1, m2, m3 = st.columns(3)
     m1.metric("Visitors", f"{total:,}")
@@ -493,26 +490,27 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     display = history[["Visitor", "Ad", "Outcome", "Source", "Views after", "Clicks after", "CTR after", "Decision"]].copy()
     display["CTR after"] = display["CTR after"].map(lambda p: f"{p:.2%}")
     st.dataframe(display.iloc[::-1], hide_index=True, width="stretch", height=320)
-    st.caption("Newest visitor first. CTR after is cumulative for the selected ad, not the latest batch's CTR.")
     st.download_button("Download complete history (CSV)", history.to_csv(index=False).encode(),
                        file_name=f"{prefix.lower()}_history.csv", mime="text/csv", key=f"download_{prefix}")
 
 
 def show_comparison(show_truth: bool) -> None:
     config, runs = st.session_state.config, st.session_state.runs
-    st.write("Run all three strategies through the same simulated visitor stream. Each strategy learns only from the ad it actually shows.")
-    st.caption("At matching visitor numbers, an ad has the same potential click outcome for every strategy. Decision randomness is separate. No strategy is guaranteed to win any one run.")
-    batch = st.select_slider("Visitors to add to each strategy", options=[10, 100, 500, 1000, 5000], value=100, key="compare_batch")
-    if st.button("Run all three", type="primary", key="compare_run"):
+    batch_col, run_col = st.columns([3, 1], vertical_alignment="bottom")
+    batch = batch_col.select_slider("Visitors to add to each strategy", options=[10, 100, 500, 1000, 5000], value=100, key="compare_batch")
+    if run_col.button("Run all three", type="primary", key="compare_run", help="Add the selected number of visitors to every strategy."):
         for name in STRATEGIES:
             run = runs[name]
             for _ in range(min(batch, MAX_VISITORS-len(run["history"]))):
                 record(run, name, config)
         st.rerun()
-    if st.button("Reset all histories", key="reset_all"):
+    if st.button("Reset all histories", key="reset_all", help="Clear all strategy and contextual histories. Download CSV first."):
         apply_settings(config)
         st.rerun()
-    st.caption("Resetting or applying settings clears session histories. Download them first if you want to keep them.")
+    with st.popover("How to compare", icon=":material/info:", help="Open comparison and regret guidance."):
+        st.write("At matching visitor numbers, each ad has the same potential click outcome across strategies. Each strategy observes only the ad it shows; decision randomness is independent. Compare at equal visitor totals and repeat with different seeds.")
+        st.write("Expected regret accumulates best true CTR minus selected ad’s true CTR. Lower is better. True rates are used only for simulation and evaluation. No strategy is guaranteed to win a single run.")
+        st.write("Download CSV before resetting or applying new settings.")
     rows, combined = [], []
     has_manual = any(row["Source"] == "Manual" for r in runs.values() for row in r["history"])
     if has_manual:
@@ -541,7 +539,6 @@ def show_comparison(show_truth: bool) -> None:
         st.plotly_chart(plot_layout(fig_alloc, "Ad", "Visitors assigned"), width="stretch", key="compare_alloc")
         if show_truth:
             st.plotly_chart(plot_layout(fig_regret, "Visitors", "Cumulative expected clicks forgone"), width="stretch", key="compare_regret")
-            st.caption("Expected regret adds (best true CTR − selected ad's true CTR) each visitor. Lower is better. It measures selection quality, rather than unlucky clicks, and uses true rates only for evaluation.")
         combined_df = pd.concat(combined, ignore_index=True)
         st.download_button("Download all strategies' histories (CSV)", combined_df.to_csv(index=False).encode(),
                            "all_bandit_histories.csv", "text/csv", key="download_all")
@@ -550,11 +547,11 @@ def show_comparison(show_truth: bool) -> None:
 def main() -> None:
     st.set_page_config(page_title="Bandit Strategy Lab", page_icon="🎰", layout="wide")
     st.title("Bandit Strategy Lab")
-    st.write("Choose an ad, observe a click or non-click, and watch the algorithm learn. Try one visitor at a time or compare thousands of simulated visitors.")
+    st.caption("Simulate visitors. Watch the strategies learn.")
     if "config" not in st.session_state:
         apply_settings({"rates": [.10, .20, .05], "epsilon": .10, "ucb_scale": 1.0, "seed": 42})
     with st.sidebar:
-        st.header("Simulation settings")
+        st.header("Simulation settings", help="True rates generate automatic outcomes; strategies never see them. Apply changes to start fresh. Download CSV before resetting.")
         with st.form("settings"):
             rates = [st.slider(f"{a} true CTR (%)", 0, 100, int(round(st.session_state.config["rates"][i]*100)), key=f"rate_{i}") / 100 for i, a in enumerate(ARMS)]
             epsilon = st.slider("Epsilon: random exploration", 0.0, 1.0, st.session_state.config["epsilon"], .01)
@@ -564,9 +561,7 @@ def main() -> None:
         if submitted:
             apply_settings({"rates": rates, "epsilon": epsilon, "ucb_scale": ucb_scale, "seed": int(seed)})
             st.rerun()
-        st.caption("True rates generate automatic outcomes. Manual Click / No click buttons let you supply your own outcomes. Rates stay fixed during a run.")
-        show_truth = st.checkbox("Reveal true rates and expected regret", value=True)
-        st.caption("Thompson sampling starts with Beta(1,1) for every ad. Each session has its own history; download CSV to keep or share it.")
+        show_truth = st.checkbox("Reveal true rates and expected regret", value=True, help="Show the simulator’s hidden ground truth and expected regret. Each browser session has its own history; download CSV to keep it.")
     tabs = st.tabs([*STRATEGIES, "Contextual Thompson", "Compare all three", "How to use this in class"])
     for tab, strategy in zip(tabs[:3], STRATEGIES):
         with tab:

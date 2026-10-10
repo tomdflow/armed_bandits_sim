@@ -33,6 +33,7 @@ pinned to tested versions; update them deliberately and rerun the checks.
 
 ## Explore
 
+- Visitor controls sit above the charts. Hover over help icons for quick tips, or open **How it works** for formulas and teaching notes.
 - Decision tables show the current formula inputs, intermediate calculations, and final values. Thompson sampling distinguishes the posterior mean from the sampled decision value; UCB shows every bonus step; epsilon-greedy shows its shared exploration draw; contextual Thompson shows the feature × effect contribution.
 - Each strategy has its own tab and session history. Its next decision stays fixed until you supply or simulate the outcome.
 - Click **Click** or **No click** for a manual outcome, or simulate one or many visitors.
