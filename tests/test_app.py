@@ -94,6 +94,46 @@ class SimulationTests(unittest.TestCase):
             self.assertTrue(all(old_table["Shared random draw (u)"] == "Recorded on next decision"))
             self.assertIs(app.choose(run, "Epsilon-greedy", config), decision)
 
+    def test_learning_curves_reconstruct_reward_estimates_and_regret(self):
+        run = app.new_run(42, 2)
+        run["history"] = [
+            {"Ad": "Ad A", "Click (0/1)": 1, "Source": "Manual"},
+            {"Ad": "Ad B", "Click (0/1)": 0, "Source": "Manual"},
+            {"Ad": "Ad A", "Click (0/1)": 0, "Source": "Manual"}]
+        rng_before = repr(run["rng"].bit_generator.state)
+        curves = app.learning_history(run, "Thompson sampling", CONFIG)
+        np.testing.assert_allclose(curves["Cumulative clicks"], [0, 1, 1, 1])
+        np.testing.assert_allclose(curves["Cumulative expected regret"], [0, .1, .1, .2])
+        np.testing.assert_allclose(curves["Ad A learned CTR"], [.5, 2/3, 2/3, .5])
+        np.testing.assert_allclose(curves["Ad B learned CTR"], [.5, .5, 1/3, 1/3])
+        np.testing.assert_allclose(curves["Ad C learned CTR"], [.5] * 4)
+        np.testing.assert_array_equal(curves["Ad A views"], [0, 1, 1, 2])
+        empirical = app.learning_history(run, "UCB", CONFIG)
+        np.testing.assert_allclose(empirical["Ad A learned CTR"], [0, 1, 1, .5])
+        self.assertEqual(repr(run["rng"].bit_generator.state), rng_before)
+        shown = app.learning_figures(curves, True, np.array(CONFIG["rates"]))
+        hidden = app.learning_figures(curves, False, np.array(CONFIG["rates"]))
+        self.assertEqual(len(shown[0].data), 6)
+        self.assertEqual(len(hidden[0].data), 3)
+        np.testing.assert_allclose(shown[2].data[0].y, [0, .1, .1, .2])
+
+    def test_contextual_curves_use_the_best_ad_for_each_visitor_type(self):
+        run = app.new_contextual_run(42)
+        run["history"] = [
+            {"Ad": "Ad A", "Visitor type": "Returning", "Click (0/1)": 1, "Source": "Manual"},
+            {"Ad": "Ad A", "Visitor type": "New", "Click (0/1)": 0, "Source": "Manual"},
+            {"Ad": "Ad B", "Visitor type": "Returning", "Click (0/1)": 0, "Source": "Manual"}]
+        returning = app.learning_history(run, "Contextual Thompson", returning=1)
+        new = app.learning_history(run, "Contextual Thompson", returning=0)
+        np.testing.assert_allclose(returning["Cumulative expected regret"], [0, 0, .02, .06])
+        np.testing.assert_allclose(new["Cumulative expected regret"], returning["Cumulative expected regret"])
+        np.testing.assert_allclose(returning["Ad A learned CTR"], [.5, 2/3, 2/3, 2/3])
+        np.testing.assert_allclose(new["Ad A learned CTR"], [.5, .5, 1/3, 1/3])
+        np.testing.assert_allclose(returning["Cumulative clicks"], [0, 1, 1, 1])
+        empty = app.learning_history(app.new_contextual_run(42), "Contextual Thompson", returning=1)
+        self.assertEqual(len(empty), 1)
+        self.assertEqual(empty.iloc[0]["Cumulative expected regret"], 0)
+
     def test_session_limit_preserves_history(self):
         run = app.new_run(42, 0)
         run["history"] = [None] * app.MAX_VISITORS

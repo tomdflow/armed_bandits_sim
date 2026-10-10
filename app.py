@@ -273,6 +273,103 @@ def weight_chart(run: dict, decision: dict, arm: int, weight: int) -> go.Figure:
     return highlight_chart(fig, decision["arm"] == arm)
 
 
+def learning_history(run: dict, strategy: str, config: dict | None = None,
+                     returning: int | None = None) -> pd.DataFrame:
+    """Reconstruct post-observation estimates without changing session state."""
+    history = pd.DataFrame(run["history"])
+    n = len(history)
+    visitors = np.arange(n + 1)
+    outcomes = history["Click (0/1)"].to_numpy(dtype=int) if n else np.array([], dtype=int)
+    ads = history["Ad"].to_numpy() if n else np.array([], dtype=str)
+    data = {"Visitor": visitors, "Cumulative clicks": np.r_[0, np.cumsum(outcomes)]}
+    contextual = returning is not None
+    contexts = ((history["Visitor type"].to_numpy() == "Returning").astype(int)
+                if n and contextual else np.zeros(n, dtype=int))
+    for i, label in enumerate(ARMS):
+        mask = ads == label
+        if contextual:
+            mask &= contexts == returning
+        views = np.r_[0, np.cumsum(mask)]
+        clicks = np.r_[0, np.cumsum(outcomes * mask)]
+        estimate = ((clicks + 1) / (views + 2) if contextual or strategy == "Thompson sampling"
+                    else np.divide(clicks, views, out=np.zeros(n + 1), where=views > 0))
+        data[f"{label} learned CTR"] = estimate
+        data[f"{label} views"] = views
+    if contextual:
+        indices = np.array([ARMS.index(ad) for ad in ads], dtype=int)
+        rates = run["rates"]
+        gaps = rates.max(axis=0)[contexts] - rates[indices, contexts]
+    else:
+        if config is None:
+            raise ValueError("Non-contextual learning history requires the simulator settings.")
+        rates = np.asarray(config["rates"])
+        indices = np.array([ARMS.index(ad) for ad in ads], dtype=int)
+        gaps = rates.max() - rates[indices]
+    data["Cumulative expected regret"] = np.r_[0., np.cumsum(gaps)]
+    return pd.DataFrame(data)
+
+
+def learning_figures(curves: pd.DataFrame, show_truth: bool, rates: np.ndarray) -> list:
+    learned, earned, regret = go.Figure(), go.Figure(), go.Figure()
+    x = curves["Visitor"]
+    for i, label in enumerate(ARMS):
+        learned.add_trace(go.Scatter(
+            x=x, y=curves[f"{label} learned CTR"], name=label, mode="lines+markers" if len(x) <= 2 else "lines",
+            line=dict(color=COLORS[i], shape="hv"),
+            customdata=curves[[f"{label} views"]].to_numpy(),
+            hovertemplate="Visitor %{x}<br>Estimated CTR: %{y:.2%}<br>Observations for this ad: %{customdata[0]}<extra>" + label + "</extra>"))
+        if show_truth:
+            learned.add_trace(go.Scatter(x=[0, int(x.iloc[-1])], y=[rates[i], rates[i]],
+                name=f"{label} true CTR", showlegend=False, mode="lines",
+                line=dict(color=COLORS[i], dash="dot"),
+                hovertemplate="True CTR: %{y:.2%}<extra>" + label + "</extra>"))
+    plot_layout(learned, "Visitors recorded", "Estimated click probability", 310)
+    learned.update_yaxes(range=[0, 1], tickformat=".0%")
+    for fig, column, y_title, color in [
+            (earned, "Cumulative clicks", "Total clicks earned", COLORS[0]),
+            (regret, "Cumulative expected regret", "Expected clicks forgone", COLORS[1])]:
+        fig.add_trace(go.Scatter(x=x, y=curves[column], mode="lines+markers" if len(x) <= 2 else "lines",
+                                line=dict(color=color), showlegend=False,
+                                hovertemplate="Visitor %{x}<br>" + y_title + ": %{y:.3f}<extra></extra>"))
+        plot_layout(fig, "Visitors recorded", y_title, 310)
+        fig.update_yaxes(rangemode="tozero")
+    return [learned, earned, regret]
+
+
+def show_learning_curves(run: dict, strategy: str, show_truth: bool,
+                         config: dict | None = None, returning: int | None = None) -> None:
+    if not run["history"]:
+        return
+    curves = learning_history(run, strategy, config, returning)
+    contextual = returning is not None
+    rates = run["rates"][:, returning] if contextual else np.asarray(config["rates"])
+    learned, earned, regret = learning_figures(curves, show_truth, rates)
+    st.subheader("Learning over visitors", help="Each point uses all observations up to that visitor, starting at visitor 0. Reward is actual clicks; expected regret measures choices using the simulator’s true rates. These measure different things.")
+    if any(row["Source"] == "Manual" for row in run["history"]):
+        st.caption("Includes manual outcomes: estimates and earned clicks use your inputs; expected regret still uses the simulator’s true rates.")
+    columns = st.columns(3 if show_truth else 2)
+    with columns[0]:
+        context_label = " · returning" if returning == 1 else " · new" if contextual else ""
+        st.markdown("**Learned click rates" + context_label + "**")
+        st.plotly_chart(learned, width="stretch", key=f"learning_estimates_{strategy}")
+    with columns[1]:
+        st.markdown("**Reward earned**")
+        st.plotly_chart(earned, width="stretch", key=f"learning_reward_{strategy}")
+    if show_truth:
+        with columns[2]:
+            st.markdown("**Expected regret**")
+            st.plotly_chart(regret, width="stretch", key=f"learning_regret_{strategy}")
+    with st.popover("Read these curves", icon=":material/info:"):
+        if contextual or strategy == "Thompson sampling":
+            st.write("Learned click rates are Beta posterior means: (clicks + 1) / (views + 2), starting at 50%. They summarize the belief; the next decision still uses a random posterior draw.")
+        else:
+            st.write("Learned click rates are empirical estimates: clicks / views. Untried ads start at the algorithm’s zero estimate; this does not mean their true click rate is zero. UCB’s bonus is separate from this estimate.")
+        st.write("An ad’s estimate changes only when it receives an outcome. Hover over a curve to see how many observations support it. Dotted lines, when revealed, show true rates. Visitors are ordered by the full history, not by plays of an individual ad.")
+        st.write("Reward earned is the cumulative number of actual clicks. Expected regret accumulates best true click rate minus chosen ad’s true click rate. It can rise on a click and remain flat on a non-click: it measures choice quality rather than luck. A flatter regret curve means fewer expected clicks forgone per visitor.")
+        if contextual:
+            st.write("The learned-rate chart uses the currently selected visitor type. Reward and regret include both types; regret compares each selected ad with the best ad for that visitor’s own type.")
+
+
 def show_contextual(show_truth: bool) -> None:
     if "contextual" not in st.session_state:
         st.session_state.contextual = new_contextual_run(st.session_state.config["seed"])
@@ -361,6 +458,7 @@ def show_contextual(show_truth: bool) -> None:
             fresh["rates"] = rates
             st.session_state.contextual = fresh
             st.rerun()
+    show_learning_curves(run, "Contextual Thompson", show_truth, returning=returning)
     st.subheader("Contextual click history", help="This tab has its own history. Global settings/reset also clears it. Download CSV to keep a run.")
     if not run["history"]:
         st.info("Record an outcome to see learning for the selected ad and visitor type.")
@@ -475,6 +573,7 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     st.dataframe(table_for(run, decision, strategy, config), hide_index=True, width="stretch")
     if show_truth:
         st.caption("Simulator's true rates: " + " · ".join(f"{a}: {p:.1%}" for a, p in zip(ARMS, config["rates"])))
+    show_learning_curves(run, strategy, show_truth, config=config)
     st.subheader("Click history", help="Newest visitor first. CTR after includes all previous observations for that ad. Download CSV to keep a run; resetting or session loss clears it.")
     if not run["history"]:
         st.info("Record a click or non-click to see the first update.")
@@ -561,16 +660,6 @@ def show_about() -> None:
 - **A small contextual example:** New/Returning is one binary feature. Each ad learns separate Beta beliefs for the two visitor types, then transforms their sampled rates into baseline and effect weights. This is an exact special case; it does not learn a general linear model or share evidence across visitor types.
 - **Comparison limits:** manual outcomes are useful for teaching updates, but can contradict the simulator’s rates. Reset before an automatic comparison, use equal visitor totals, and try several seeds.
 - **Session history:** simulations live in the current session. Download CSV to keep a run before resetting or leaving.
-""")
-    with st.expander("Other bandit methods to explore"):
-        st.markdown("""
-These are ideas for future lessons, not algorithms implemented in this app:
-
-- **Random and greedy baselines:** show why exploring and learning can matter.
-- **KL-UCB:** a confidence-bound method that uses the reward distribution more specifically; a natural next lesson for binary rewards.
-- **LinUCB:** learn from richer feature vectors and show how context changes the decision.
-- **Sliding-window or discounted methods:** forget old observations when the best option changes over time. This needs a changing-rate environment too.
-- **EXP3:** explore the adversarial bandit setting, where rewards need not come from fixed probability distributions. Its usual comparator is the best fixed option in hindsight.
 """)
     with st.expander("Further reading"):
         st.markdown("""

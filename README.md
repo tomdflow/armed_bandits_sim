@@ -38,6 +38,7 @@ and shared in case it helps others. The **About** tab explains the project, its
 assumptions, and further reading; the **Learning guide** suggests experiments.
 For bugs, suggestions, or requests, [open a GitHub issue](https://github.com/tomdflow/armed_bandits_sim/issues).
 
+- Above each click history, learning curves show estimated click rates, cumulative clicks earned, and (when true rates are revealed) cumulative expected regret. Contextual estimates use the selected visitor type; contextual regret uses the best ad for each recorded visitor’s own type.
 - Visitor controls sit above the charts. Hover over help icons for quick tips, or open **How it works** for formulas and teaching notes.
 - Decision tables show the current formula inputs, intermediate calculations, and final values. Thompson sampling distinguishes the posterior mean from the sampled decision value; UCB shows every bonus step; epsilon-greedy shows its shared exploration draw; contextual Thompson shows the feature × effect contribution.
 - Each strategy has its own tab and session history. Its next decision stays fixed until you supply or simulate the outcome.
