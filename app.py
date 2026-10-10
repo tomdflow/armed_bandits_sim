@@ -31,9 +31,11 @@ def choose(run: dict, strategy: str, config: dict) -> dict:
     counts, clicks, rng = run["counts"], run["clicks"], run["rng"]
     means = np.divide(clicks, counts, out=np.zeros(3), where=counts > 0)
     bonus = np.zeros(3)
+    exploration_draw = None
     if strategy == "Epsilon-greedy":
         scores = means.copy()
-        explore = rng.random() < config["epsilon"]
+        exploration_draw = float(rng.random())
+        explore = exploration_draw < config["epsilon"]
         if explore:
             arm = int(rng.integers(3))
             reason = "Random exploration (epsilon coin chose explore)"
@@ -58,7 +60,7 @@ def choose(run: dict, strategy: str, config: dict) -> dict:
         arm = int(np.argmax(scores))
         reason = "Highest sampled plausible CTR"
     run["pending"] = {"arm": arm, "scores": scores, "means": means,
-                      "bonus": bonus, "reason": reason}
+                      "bonus": bonus, "reason": reason, "exploration_draw": exploration_draw}
     return run["pending"]
 
 
@@ -295,10 +297,14 @@ def show_contextual(show_truth: bool) -> None:
     rows = []
     for i, label in enumerate(ARMS):
         b, e = decision["weights"][i]
-        rows.append({"Ad": label, "Sampled baseline": f"{b:.3f}", "Sampled returning effect": f"{e:+.3f}",
-                     "Calculation": f"{b:.3f} + {returning} × ({e:+.3f}) = {decision['scores'][i]:.3f}",
+        rows.append({"Ad": label, "Sampled baseline (θ₀)": f"{b:.4f}",
+                     "Returning feature (x)": returning, "Sampled returning effect (θ₁)": f"{e:+.4f}",
+                     "Contribution = x × θ₁": f"{returning} × ({e:+.4f}) = {returning*e:+.4f}",
+                     "Calculation = θ₀ + x × θ₁": f"{b:.4f} + ({returning*e:+.4f}) = {decision['scores'][i]:.4f}",
+                     "Next decision value": f"{decision['scores'][i]:.4f}",
                      "Next visitor": "← selected" if i == decision["arm"] else ""})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption("Read left to right: baseline + (visitor feature × returning effect) = decision score. New visitors have x = 0; returning visitors have x = 1. Values are rounded for display; selection uses full precision.")
     st.subheader("Distributions behind the sampled weights")
     st.caption("Each column is one ad; each row is one weight. Diamonds mark the weights used above. Blue tint identifies the selected ad. Effect is a change in probability: +0.08 means +8 percentage points.")
     for weight, heading in [(0, "Baseline-weight distributions"), (1, "Returning-effect distributions")]:
@@ -371,17 +377,45 @@ def show_contextual(show_truth: bool) -> None:
     st.download_button("Download contextual history (CSV)", history.to_csv(index=False).encode(), "contextual_thompson_history.csv", "text/csv", key="ctx_download")
 
 
-def table_for(run: dict, decision: dict) -> pd.DataFrame:
+def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.DataFrame:
+    """Show the actual frozen decision's inputs and arithmetic, without new draws."""
     rows = []
+    t = len(run["history"]) + 1
+    log_t = math.log(max(2, t))
     for i, name in enumerate(ARMS):
-        n, c = int(run["counts"][i]), int(run["clicks"][i])
-        score = decision["scores"][i]
-        rows.append({"Ad": name, "Views": n, "Clicks": c, "Non-clicks": n-c,
-                     "Observed CTR": f"{c/n:.2%}" if n else "No observations",
-                     "Beta belief": f"Beta({c+1}, {n-c+1})",
-                     "Beta mean": f"{(c+1)/(n+2):.2%}",
-                     "Next decision value": "Untried: priority" if np.isinf(score) else f"{score:.4f}",
-                     "Next visitor": "← selected" if decision["arm"] == i else ""})
+        n, clicks = int(run["counts"][i]), int(run["clicks"][i])
+        mean, score = float(decision["means"][i]), float(decision["scores"][i])
+        row = {"Ad": name, "Views (n)": n, "Clicks": clicks, "Non-clicks": n-clicks,
+               "CTR calculation": f"{clicks} / {n} = {mean:.4f}" if n else "No views → estimate 0",
+               "Observed CTR": f"{mean:.2%}" if n else "No observations"}
+        if strategy == "Thompson sampling":
+            alpha, beta = clicks + 1, n - clicks + 1
+            row.update({"α = 1 + clicks": f"1 + {clicks} = {alpha}",
+                        "β = 1 + non-clicks": f"1 + {n-clicks} = {beta}",
+                        "Beta belief": f"Beta({alpha}, {beta})",
+                        "Mean = α / (α + β)": f"{alpha} / ({alpha} + {beta}) = {alpha/(alpha+beta):.4f}",
+                        "Beta mean": f"{alpha/(alpha+beta):.2%}",
+                        "Decision step": f"Draw from Beta({alpha}, {beta}) → {score:.4f}"})
+        elif strategy == "UCB":
+            scale = config["ucb_scale"]
+            row.update({"Next visitor (t)": t, "Multiplier (c)": scale,
+                        "ln(max(2, t))": f"ln({max(2, t)}) = {log_t:.4f}",
+                        "2 × ln(max(2, t)) / n": f"{2*log_t:.4f} / {n} = {2*log_t/n:.4f}" if n else "Undefined (n = 0)",
+                        "√(2 × ln(max(2, t)) / n)": f"{math.sqrt(2*log_t/n):.4f}" if n else "Initialization",
+                        "Bonus = c × √(…)": f"{scale:.4f} × {math.sqrt(2*log_t/n):.4f} = {decision['bonus'][i]:.4f}" if n else "Initialization",
+                        "Decision step": f"{mean:.4f} + {decision['bonus'][i]:.4f} = {score:.4f}" if n else "Try each ad once; untried score = ∞"})
+        else:
+            draw = decision.get("exploration_draw")
+            # Existing live sessions may have a frozen decision from before this
+            # field was added. Keep that decision rather than generating a new one.
+            exploring = "Random exploration" in decision["reason"]
+            row.update({"Exploration probability (ε)": f"{config['epsilon']:.4f}",
+                        "Shared random draw (u)": f"{draw:.4f}" if draw is not None else "Recorded on next decision",
+                        "Decision step": ("u < ε → random ad (CTR does not rank this choice)" if exploring
+                                          else "u ≥ ε → highest observed CTR; random tie-break")})
+        row["Next decision value"] = "∞ (untried: priority)" if np.isinf(score) else f"{score:.4f}"
+        row["Next visitor"] = "← selected" if decision["arm"] == i else ""
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -398,6 +432,7 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     prefix = strategy.replace(" ", "_")
     if strategy == "Epsilon-greedy":
         st.write(f"With probability {config['epsilon']:.0%}, choose an ad uniformly at random. Otherwise choose the highest observed CTR.")
+        st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad u\sim\mathrm{Uniform}(0,1):\quad u<\epsilon\Rightarrow\mathrm{explore},\quad u\geq\epsilon\Rightarrow\mathrm{exploit}")
         st.caption("Untried ads start with an estimate of 0; ties are broken randomly. A random exploration choice can also pick the current leader.")
     elif strategy == "UCB":
         st.write("Choose the largest observed CTR + uncertainty bonus. First, show each ad once.")
@@ -413,7 +448,14 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
         show_beta_panels(run, decision)
     else:
         st.plotly_chart(decision_chart(run, strategy, decision), width="stretch", key=f"chart_{prefix}")
-    st.dataframe(table_for(run, decision), hide_index=True, width="stretch")
+    st.markdown("**Current decision, step by step**")
+    st.dataframe(table_for(run, decision, strategy, config), hide_index=True, width="stretch")
+    if strategy == "Thompson sampling":
+        st.caption("Read left to right: counts → α and β → Beta belief → random draw → decision. The Beta mean summarizes the belief; the next decision uses the sampled draw. Values are rounded for display; selection uses full precision.")
+    elif strategy == "UCB":
+        st.caption("Read left to right: observed CTR → t and c → logarithm → divide by n → square root → uncertainty bonus → sum. For n = 0, initialization takes priority; no division is performed. Scroll horizontally to see all steps. Values are rounded for display; selection uses full precision.")
+    else:
+        st.caption("One shared uniform draw u between 0 and 1 decides the branch for this visitor. If u < ε, pick an ad uniformly at random; otherwise use the highest CTR estimate. The next decision value is the CTR estimate, which ranks ads only in the exploitation branch. Values are rounded for display; selection uses full precision.")
     if show_truth:
         st.caption("Simulator's true rates: " + " · ".join(f"{a}: {p:.1%}" for a, p in zip(ARMS, config["rates"])) + ". The algorithms never read these rates.")
     st.write("**Record the next visitor**")

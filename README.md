@@ -33,6 +33,7 @@ pinned to tested versions; update them deliberately and rerun the checks.
 
 ## Explore
 
+- Decision tables show the current formula inputs, intermediate calculations, and final values. Thompson sampling distinguishes the posterior mean from the sampled decision value; UCB shows every bonus step; epsilon-greedy shows its shared exploration draw; contextual Thompson shows the feature × effect contribution.
 - Each strategy has its own tab and session history. Its next decision stays fixed until you supply or simulate the outcome.
 - Click **Click** or **No click** for a manual outcome, or simulate one or many visitors.
 - Thompson sampling shows three separate Beta charts side by side on common axes. The next selected ad has a tinted background and explicit label; diamonds mark the next decision's sampled CTRs, and a dashed line shows the latest updated ad's previous curve.
