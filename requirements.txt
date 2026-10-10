@@ -1,0 +1,5 @@
+# Tested with Python 3.13. Upgrade deliberately and run the tests.
+streamlit==1.65.0
+numpy==2.5.3
+pandas==3.0.6
+plotly==7.1.0

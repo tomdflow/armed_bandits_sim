@@ -1,0 +1,20 @@
+# Local Python environment and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Credentials stay local; configure Cloud secrets in its dashboard
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Editors and OS files
+.DS_Store
+.vscode/
+.idea/
+*.log
