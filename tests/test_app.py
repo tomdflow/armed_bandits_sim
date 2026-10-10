@@ -5,7 +5,7 @@ import numpy as np
 from streamlit.testing.v1 import AppTest
 import app
 
-CONFIG = {"rates": [.10, .20, .05], "epsilon": .10, "ucb_scale": 1.0, "seed": 42}
+CONFIG = {"rates": [.10, .20, .05], "epsilon": .10, "seed": 42}
 
 class SimulationTests(unittest.TestCase):
     def test_pending_decision_stays_fixed_until_outcome(self):
@@ -75,10 +75,23 @@ class SimulationTests(unittest.TestCase):
         run["history"] = [None] * 8
         run["pending"] = None
         table = app.table_for(run, app.choose(run, "UCB", CONFIG), "UCB", CONFIG)
-        self.assertEqual(table.iloc[0]["Next visitor (t)"], 9)
+        self.assertEqual(table.iloc[0]["Total recorded visitors (N)"], 8)
         self.assertEqual(table.iloc[0]["CTR calculation"], "1 / 4 = 0.2500")
-        self.assertEqual(table.iloc[0]["Decision step"], "0.2500 + 1.0481 = 1.2981")
-        self.assertEqual(table.iloc[0]["Next decision value"], "1.2981")
+        self.assertEqual(table.iloc[0]["Decision step"], "0.2500 + 1.0197 = 1.2697")
+        self.assertEqual(table.iloc[0]["Next decision value"], "1.2697")
+
+    def test_ucb_initialization_and_old_session_use_the_slide_formula(self):
+        run = app.new_run(42, 1)
+        app.record(run, "UCB", CONFIG, 0)
+        self.assertEqual(app.choose(run, "UCB", CONFIG)["bonus"][0], 0)
+        run["counts"][:] = [1, 1, 1]
+        run["clicks"][:] = [0, 1, 0]
+        run["history"] = [None] * 3
+        run["pending"] = {"arm": 0, "scores": np.array([9., 0., 0.])}
+        decision = app.choose(run, "UCB", CONFIG)
+        np.testing.assert_allclose(decision["scores"], [1.4823038074, 2.4823038074, 1.4823038074])
+        self.assertEqual(decision["arm"], 1)
+        self.assertIs(app.choose(run, "UCB", CONFIG), decision)
 
     def test_epsilon_table_explains_both_branches_and_old_sessions(self):
         for epsilon, branch in [(0.0, "u ≥ ε"), (1.0, "u < ε")]:
@@ -160,20 +173,13 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(len(at.session_state["runs"]["UCB"]["history"]), 1)
         self.assertEqual(len(at.session_state["runs"]["Thompson sampling"]["history"]), 1)
         self.assertEqual(len(at.session_state["contextual"]["history"]), 1)
-        at.slider(key="model_ucb_scale").set_value(0.0)
-        at.button(key="FormSubmitter:model_settings_UCB-Apply & reset this tab").click().run()
-        self.assertEqual(len(at.exception), 0)
-        self.assertEqual(at.session_state["config"]["ucb_scale"], 0.0)
-        self.assertFalse(at.session_state["runs"]["UCB"]["history"])
-        self.assertEqual(len(at.session_state["runs"]["Thompson sampling"]["history"]), 1)
+        self.assertFalse(any(s.key == "model_ucb_scale" for s in at.slider))
         at.slider(key="rate_0").set_value(25)
         at.button(key="FormSubmitter:settings-Apply settings & reset all").click().run()
         self.assertEqual(len(at.exception), 0)
         self.assertEqual(at.session_state["config"]["rates"][0], .25)
         self.assertEqual(at.session_state["config"]["epsilon"], 1.0)
-        self.assertEqual(at.session_state["config"]["ucb_scale"], 0.0)
         self.assertEqual(at.slider(key="model_epsilon").value, 1.0)
-        self.assertEqual(at.slider(key="model_ucb_scale").value, 0.0)
         self.assertTrue(all(not r["history"] for r in at.session_state["runs"].values()))
 
     def test_boot_manual_contextual_comparison_and_reset(self):

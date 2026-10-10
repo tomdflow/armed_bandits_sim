@@ -27,7 +27,10 @@ def new_run(seed: int, strategy_index: int) -> dict:
 def choose(run: dict, strategy: str, config: dict) -> dict:
     """Freeze a decision until its visitor's outcome is recorded."""
     if run["pending"] is not None:
-        return run["pending"]
+        if strategy != "UCB" or run["pending"].get("ucb_formula") == "slides":
+            return run["pending"]
+        # Recompute old live-session decisions after changing the UCB formula.
+        run["pending"] = None
     counts, clicks, rng = run["counts"], run["clicks"], run["rng"]
     means = np.divide(clicks, counts, out=np.zeros(3), where=counts > 0)
     bonus = np.zeros(3)
@@ -45,8 +48,9 @@ def choose(run: dict, strategy: str, config: dict) -> dict:
     elif strategy == "UCB":
         untried = np.flatnonzero(counts == 0)
         tried = counts > 0
-        t = len(run["history"]) + 1
-        bonus[tried] = config["ucb_scale"] * np.sqrt(2 * np.log(max(2, t)) / counts[tried])
+        total = len(run["history"])
+        if np.any(tried):
+            bonus[tried] = np.sqrt(2 * np.log(total) / counts[tried])
         scores = means + bonus
         scores[~tried] = np.inf
         if len(untried):
@@ -60,7 +64,8 @@ def choose(run: dict, strategy: str, config: dict) -> dict:
         arm = int(np.argmax(scores))
         reason = "Highest sampled plausible CTR"
     run["pending"] = {"arm": arm, "scores": scores, "means": means,
-                      "bonus": bonus, "reason": reason, "exploration_draw": exploration_draw}
+                      "bonus": bonus, "reason": reason, "exploration_draw": exploration_draw,
+                      "ucb_formula": "slides" if strategy == "UCB" else None}
     return run["pending"]
 
 
@@ -376,6 +381,8 @@ def show_contextual(show_truth: bool) -> None:
     run = st.session_state.contextual
     st.subheader("Contextual Thompson", help="Sample weights for each ad, then use the visitor’s features to choose. Switching visitor type keeps the sampled model fixed.")
     st.latex(r"\mathrm{score}_i=\widetilde\theta_{i,0}+x\,\widetilde\theta_{i,1},\qquad a_t=\arg\max_i\mathrm{score}_i")
+    st.markdown(r"$i$: ad option · $x$: visitor feature (0 = New, 1 = Returning) · $\widetilde\theta_{i,0}$: sampled baseline click rate · $\widetilde\theta_{i,1}$: sampled change for a returning visitor.")
+    st.markdown(r"$\mathrm{score}_i$: sampled click rate for this visitor type · tilde ($\widetilde{\ }$): a sampled weight, or the labeled worked example · $t$: next visitor number · $a_t$: selected ad · $\arg\max_i$: choose the highest score.")
     visitor = st.radio("Next visitor type", ["New", "Returning"], index=1, horizontal=True, key="contextual_type")
     returning = int(visitor == "Returning")
     c1, c2, c3 = st.columns(3)
@@ -474,8 +481,8 @@ def show_contextual(show_truth: bool) -> None:
 def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.DataFrame:
     """Show the actual frozen decision's inputs and arithmetic, without new draws."""
     rows = []
-    t = len(run["history"]) + 1
-    log_t = math.log(max(2, t))
+    total = len(run["history"])
+    log_total = math.log(total) if total else None
     for i, name in enumerate(ARMS):
         n, clicks = int(run["counts"][i]), int(run["clicks"][i])
         mean, score = float(decision["means"][i]), float(decision["scores"][i])
@@ -492,12 +499,10 @@ def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.Data
                         "Beta mean": f"{alpha/(alpha+beta):.2%}",
                         "Decision step": f"Draw from Beta({alpha}, {beta}) → {score:.4f}"})
         elif strategy == "UCB":
-            scale = config["ucb_scale"]
-            row.update({"Next visitor (t)": t, "Multiplier (c)": scale,
-                        "ln(max(2, t))": f"ln({max(2, t)}) = {log_t:.4f}",
-                        "2 × ln(max(2, t)) / n": f"{2*log_t:.4f} / {n} = {2*log_t/n:.4f}" if n else "Undefined (n = 0)",
-                        "√(2 × ln(max(2, t)) / n)": f"{math.sqrt(2*log_t/n):.4f}" if n else "Initialization",
-                        "Bonus = c × √(…)": f"{scale:.4f} × {math.sqrt(2*log_t/n):.4f} = {decision['bonus'][i]:.4f}" if n else "Initialization",
+            row.update({"Total recorded visitors (N)": total,
+                        "ln N": f"ln({total}) = {log_total:.4f}" if total else "Undefined (N = 0)",
+                        "2 × ln N / nᵢ": f"{2*log_total:.4f} / {n} = {2*log_total/n:.4f}" if n else "Undefined (nᵢ = 0)",
+                        "Bonus = √(2 × ln N / nᵢ)": f"{math.sqrt(2*log_total/n):.4f}" if n else "Initialization",
                         "Decision step": f"{mean:.4f} + {decision['bonus'][i]:.4f} = {score:.4f}" if n else "Try each ad once; untried score = ∞"})
         else:
             draw = decision.get("exploration_draw")
@@ -531,14 +536,19 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     prefix = strategy.replace(" ", "_")
     if strategy == "Epsilon-greedy":
         st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad a_t=\begin{cases}\text{random ad} & \text{with probability }\epsilon\\\arg\max_i\widehat p_i & \text{with probability }1-\epsilon\end{cases}")
+        st.markdown(r"$i$: ad option · $\mathrm{clicks}_i$: clicks for that ad · $n_i$: its recorded visitors · $\widehat p_i$: observed click rate (0 before its first observation).")
+        st.markdown(r"$\epsilon$: probability of choosing a random ad · $t$: next visitor number · $a_t$: next selected ad · $\arg\max_i$: choose an ad with the highest value; break ties randomly.")
     elif strategy == "UCB":
-        st.latex(r"\mathrm{score}_i=\widehat p_i+c\sqrt{\frac{2\ln(\max(2,t))}{n_i}},\qquad a_t=\arg\max_i\mathrm{score}_i")
+        st.latex(r"\mathrm{score}_i=\bar X_i+\sqrt{\frac{2\ln N}{n_i}},\qquad a_t=\arg\max_i\mathrm{score}_i")
+        st.markdown(r"$i$: ad option · $\bar X_i$: average reward so far (clicks / visitors) · $N$: total visitors already recorded across all ads · $n_i$: visitors recorded for ad $i$.")
+        st.markdown(r"$\ln$: natural logarithm · square-root term: uncertainty bonus · $t$: next visitor number · $a_t$: next selected ad · $\arg\max_i$: choose the highest score; break ties randomly.")
+        st.caption("Start by trying each ad once; the formula then ranks the ads.")
     else:
-        st.latex(r"\widetilde p_i\sim\operatorname{Beta}(1+\mathrm{clicks}_i,\;1+\mathrm{nonclicks}_i),\qquad a_t=\arg\max_i\widetilde p_i")
-    if strategy in ("Epsilon-greedy", "UCB"):
-        setting, label, maximum, step = (("epsilon", "Exploration probability (ε)", 1.0, .01)
-                                        if strategy == "Epsilon-greedy" else
-                                        ("ucb_scale", "Uncertainty multiplier (c)", 3.0, .1))
+        st.latex(r"\widetilde p_i\sim\operatorname{Beta}(\alpha_i,\beta_i),\qquad \alpha_i=1+\mathrm{clicks}_i,\quad\beta_i=1+\mathrm{nonclicks}_i,\qquad a_t=\arg\max_i\widetilde p_i")
+        st.markdown(r"$i$: ad option · $\mathrm{clicks}_i$ / $\mathrm{nonclicks}_i$: its click / no-click counts · $\alpha_i,\beta_i$: Beta belief parameters; each starts at 1 · $\operatorname{Beta}$: distribution over possible click rates.")
+        st.markdown(r"$\sim$: drawn from · $\widetilde p_i$: one sampled plausible click rate · $t$: next visitor number · $a_t$: next selected ad · $\arg\max_i$: choose the largest sample.")
+    if strategy == "Epsilon-greedy":
+        setting, label, maximum, step = "epsilon", "Exploration probability (ε)", 1.0, .01
         with st.form(f"model_settings_{prefix}"):
             slider_col, apply_col = st.columns([3, 1], vertical_alignment="bottom")
             value = slider_col.slider(label, 0.0, maximum, config[setting], step,
@@ -577,7 +587,7 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
             st.caption("Untried ads start with an estimate of 0; ties are broken randomly. A random exploration choice can also pick the current leader.")
         elif strategy == "UCB":
             st.write("Choose the largest observed CTR + uncertainty bonus. First, show each ad once.")
-            st.caption("t is the upcoming visitor number; n is that ad's views. The score is an optimistic index and can exceed 1; it is not a probability.")
+            st.caption("N counts observations already recorded, exactly as in the lecture formula. The score can exceed 1; it is an optimistic index rather than a probability.")
         else:
             st.write("Draw one plausible click rate for each ad, then choose the largest draw. The diamonds show the next visitor's draws.")
             st.caption("Horizontal axis: possible true CTR. Higher density means more belief per unit of CTR; interval probability is area under the curve. The curves each have total area 1. The dashed line shows the last updated ad before its latest update.")
@@ -588,7 +598,7 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     if strategy == "Thompson sampling":
         table_help = "Read left to right: counts → α and β → Beta belief → random draw → decision. The Beta mean summarizes the belief; the next decision uses the sampled draw. Values are rounded for display; selection uses full precision."
     elif strategy == "UCB":
-        table_help = "Read left to right: observed CTR → t and c → logarithm → divide by n → square root → uncertainty bonus → sum. For n = 0, initialization takes priority; no division is performed. Scroll horizontally to see all steps. Values are rounded for display; selection uses full precision."
+        table_help = "Read left to right: average reward → total recorded visitors N → logarithm → divide by nᵢ → square root → add the bonus. For n = 0, initialization takes priority; no division is performed. Scroll horizontally to see all steps. Values are rounded for display; selection uses full precision."
     else:
         table_help = "One shared uniform draw u between 0 and 1 decides the branch for this visitor. If u < ε, pick an ad uniformly at random; otherwise use the highest CTR estimate. The next decision value is the CTR estimate, which ranks ads only in the exploitation branch. Values are rounded for display; selection uses full precision."
     st.subheader("Decision breakdown", help=table_help)
@@ -678,7 +688,7 @@ def show_about() -> None:
     with st.expander("Assumptions and scope"):
         st.markdown("""
 - **Three fixed options and binary rewards:** automatic outcomes are independent click/no-click draws with a fixed probability for each ad. Other reward types, changing rates, delayed feedback, and changing available options are outside the current simulation.
-- **Three core strategies:** fixed-epsilon greedy, UCB1-style confidence bonuses with an adjustable multiplier, and Beta–Bernoulli Thompson sampling. Their behavior in one run does not establish which strategy is universally best.
+- **Three core strategies:** fixed-epsilon greedy, the lecture’s UCB confidence bonus, and Beta–Bernoulli Thompson sampling. Their behavior in one run does not establish which strategy is universally best.
 - **A small contextual example:** New/Returning is one binary feature. Each ad learns separate Beta beliefs for the two visitor types, then transforms their sampled rates into baseline and effect weights. This is an exact special case; it does not learn a general linear model or share evidence across visitor types.
 - **Comparison limits:** manual outcomes are useful for teaching updates, but can contradict the simulator’s rates. Reset before an automatic comparison, use equal visitor totals, and try several seeds.
 - **Session history:** simulations live in the current session. Download CSV to keep a run before resetting or leaving.
@@ -698,7 +708,7 @@ def main() -> None:
     st.title("Bandit Strategy Lab")
     st.caption("Simulate visitors. Watch the strategies learn.")
     if "config" not in st.session_state:
-        apply_settings({"rates": [.10, .20, .05], "epsilon": .10, "ucb_scale": 1.0, "seed": 42})
+        apply_settings({"rates": [.10, .20, .05], "epsilon": .10, "seed": 42})
     with st.sidebar:
         st.header("Shared simulation", help="These ad rates apply to epsilon-greedy, UCB, and Thompson sampling. Contextual rates are in their own tab. True rates generate outcomes; strategies never see them. Applying changes resets all histories.")
         with st.form("settings"):
