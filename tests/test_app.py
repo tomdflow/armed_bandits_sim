@@ -146,6 +146,36 @@ class SimulationTests(unittest.TestCase):
         self.assertEqual(int(ctx["counts"].sum()), 0)
 
 class InterfaceTests(unittest.TestCase):
+    def test_model_controls_reset_only_their_run_and_survive_shared_changes(self):
+        at = AppTest.from_file(str(Path(app.__file__)), default_timeout=30).run()
+        for key in ["auto_Epsilon-greedy", "auto_UCB", "auto_Thompson_sampling", "ctx_auto"]:
+            at.button(key=key).click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertFalse(any(s.key in ("model_epsilon", "model_ucb_scale") for s in at.sidebar.slider))
+        at.slider(key="model_epsilon").set_value(1.0)
+        at.button(key="FormSubmitter:model_settings_Epsilon-greedy-Apply & reset this tab").click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertEqual(at.session_state["config"]["epsilon"], 1.0)
+        self.assertFalse(at.session_state["runs"]["Epsilon-greedy"]["history"])
+        self.assertEqual(len(at.session_state["runs"]["UCB"]["history"]), 1)
+        self.assertEqual(len(at.session_state["runs"]["Thompson sampling"]["history"]), 1)
+        self.assertEqual(len(at.session_state["contextual"]["history"]), 1)
+        at.slider(key="model_ucb_scale").set_value(0.0)
+        at.button(key="FormSubmitter:model_settings_UCB-Apply & reset this tab").click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertEqual(at.session_state["config"]["ucb_scale"], 0.0)
+        self.assertFalse(at.session_state["runs"]["UCB"]["history"])
+        self.assertEqual(len(at.session_state["runs"]["Thompson sampling"]["history"]), 1)
+        at.slider(key="rate_0").set_value(25)
+        at.button(key="FormSubmitter:settings-Apply settings & reset all").click().run()
+        self.assertEqual(len(at.exception), 0)
+        self.assertEqual(at.session_state["config"]["rates"][0], .25)
+        self.assertEqual(at.session_state["config"]["epsilon"], 1.0)
+        self.assertEqual(at.session_state["config"]["ucb_scale"], 0.0)
+        self.assertEqual(at.slider(key="model_epsilon").value, 1.0)
+        self.assertEqual(at.slider(key="model_ucb_scale").value, 0.0)
+        self.assertTrue(all(not r["history"] for r in at.session_state["runs"].values()))
+
     def test_boot_manual_contextual_comparison_and_reset(self):
         at = AppTest.from_file(str(Path(app.__file__)), default_timeout=30).run()
         self.assertEqual(len(at.exception), 0)

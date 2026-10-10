@@ -375,6 +375,7 @@ def show_contextual(show_truth: bool) -> None:
         st.session_state.contextual = new_contextual_run(st.session_state.config["seed"])
     run = st.session_state.contextual
     st.subheader("Contextual Thompson", help="Sample weights for each ad, then use the visitor’s features to choose. Switching visitor type keeps the sampled model fixed.")
+    st.latex(r"\mathrm{score}_i=\widetilde\theta_{i,0}+x\,\widetilde\theta_{i,1},\qquad a_t=\arg\max_i\mathrm{score}_i")
     visitor = st.radio("Next visitor type", ["New", "Returning"], index=1, horizontal=True, key="contextual_type")
     returning = int(visitor == "Returning")
     c1, c2, c3 = st.columns(3)
@@ -411,7 +412,6 @@ def show_contextual(show_truth: bool) -> None:
         st.session_state.contextual = fresh
         st.rerun()
     with st.popover("How it works", icon=":material/info:", help="Open the contextual formula and model explanation."):
-        st.latex(r"\text{score}_i=\widetilde\theta_{i,0}+x\times\widetilde\theta_{i,1}")
         st.write("This is an exact click model for the special case of one binary feature (new or returning). Each ad learns a new-visitor CTR and a returning-visitor CTR, each with a Beta(1,1) starting prior. It draws those two CTRs, then sets baseline = new CTR and returning effect = returning CTR − new CTR.")
         st.write("The plotted effect distribution is the distribution of that difference. The two weight distributions are marginals of a joint belief: baseline and effect are related, so they are not drawn independently. Their sum always gives a valid returning-visitor CTR. Curves for the effect use deterministic numerical approximation; CTR sampling uses the exact Beta models.")
         st.write("A click or non-click updates only the selected ad's model for that visitor type. A new visitor changes the baseline belief and therefore the derived effect belief; a returning visitor updates the returning CTR and therefore the effect belief. The dashed curve shows the previous marginal for the last updated ad.")
@@ -519,11 +519,36 @@ def apply_settings(config: dict) -> None:
     st.session_state.contextual = new_contextual_run(config["seed"])
 
 
+def apply_model_setting(strategy: str, setting: str, value: float) -> None:
+    st.session_state.config = {**st.session_state.config, setting: value}
+    index = STRATEGIES.index(strategy)
+    st.session_state.runs[strategy] = new_run(st.session_state.config["seed"], index)
+
+
 def show_strategy(strategy: str, show_truth: bool) -> None:
     config = st.session_state.config
     run = st.session_state.runs[strategy]
-    decision = choose(run, strategy, config)
     prefix = strategy.replace(" ", "_")
+    if strategy == "Epsilon-greedy":
+        st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad a_t=\begin{cases}\text{random ad} & \text{with probability }\epsilon\\\arg\max_i\widehat p_i & \text{with probability }1-\epsilon\end{cases}")
+    elif strategy == "UCB":
+        st.latex(r"\mathrm{score}_i=\widehat p_i+c\sqrt{\frac{2\ln(\max(2,t))}{n_i}},\qquad a_t=\arg\max_i\mathrm{score}_i")
+    else:
+        st.latex(r"\widetilde p_i\sim\operatorname{Beta}(1+\mathrm{clicks}_i,\;1+\mathrm{nonclicks}_i),\qquad a_t=\arg\max_i\widetilde p_i")
+    if strategy in ("Epsilon-greedy", "UCB"):
+        setting, label, maximum, step = (("epsilon", "Exploration probability (ε)", 1.0, .01)
+                                        if strategy == "Epsilon-greedy" else
+                                        ("ucb_scale", "Uncertainty multiplier (c)", 3.0, .1))
+        with st.form(f"model_settings_{prefix}"):
+            slider_col, apply_col = st.columns([3, 1], vertical_alignment="bottom")
+            value = slider_col.slider(label, 0.0, maximum, config[setting], step,
+                                      key=f"model_{setting}",
+                                      help="Apply to start a fresh run of this strategy. Other tabs keep their histories.")
+            submitted = apply_col.form_submit_button("Apply & reset this tab")
+        if submitted:
+            apply_model_setting(strategy, setting, value)
+            st.rerun()
+    decision = choose(run, strategy, config)
     st.subheader(f"Next visitor: {ARMS[decision['arm']]}",
                  help=decision["reason"] + ". The choice stays fixed until you record an outcome.")
     c1, c2, c3 = st.columns(3)
@@ -546,19 +571,16 @@ def show_strategy(strategy: str, show_truth: bool) -> None:
     if full:
         st.info("Session limit reached (20,000 visitors per strategy). Download history before resetting.")
     with st.popover("How it works", icon=":material/info:",
-                    help="Open the formula, strategy explanation, and chart-reading tips."):
+                    help="Open the strategy explanation and chart-reading tips."):
         if strategy == "Epsilon-greedy":
             st.write(f"With probability {config['epsilon']:.0%}, choose an ad uniformly at random. Otherwise choose the highest observed CTR.")
-            st.latex(r"\widehat p_i=\frac{\mathrm{clicks}_i}{n_i},\qquad u\sim\mathrm{Uniform}(0,1):\quad u<\epsilon\Rightarrow\mathrm{explore},\quad u\geq\epsilon\Rightarrow\mathrm{exploit}")
             st.caption("Untried ads start with an estimate of 0; ties are broken randomly. A random exploration choice can also pick the current leader.")
         elif strategy == "UCB":
             st.write("Choose the largest observed CTR + uncertainty bonus. First, show each ad once.")
-            st.latex(r"\mathrm{score}_i=\widehat p_i+c\sqrt{\frac{2\ln(\max(2,t))}{n_i}}")
             st.caption("t is the upcoming visitor number; n is that ad's views. The score is an optimistic index and can exceed 1; it is not a probability.")
         else:
             st.write("Draw one plausible click rate for each ad, then choose the largest draw. The diamonds show the next visitor's draws.")
             st.caption("Horizontal axis: possible true CTR. Higher density means more belief per unit of CTR; interval probability is area under the curve. The curves each have total area 1. The dashed line shows the last updated ad before its latest update.")
-            st.latex(r"p_i\mid\mathrm{history}\sim\operatorname{Beta}(1+\mathrm{clicks}_i,\;1+\mathrm{nonclicks}_i)")
     if strategy == "Thompson sampling":
         show_beta_panels(run, decision)
     else:
@@ -678,15 +700,14 @@ def main() -> None:
     if "config" not in st.session_state:
         apply_settings({"rates": [.10, .20, .05], "epsilon": .10, "ucb_scale": 1.0, "seed": 42})
     with st.sidebar:
-        st.header("Simulation settings", help="True rates generate automatic outcomes; strategies never see them. Apply changes to start fresh. Download CSV before resetting.")
+        st.header("Shared simulation", help="These ad rates apply to epsilon-greedy, UCB, and Thompson sampling. Contextual rates are in their own tab. True rates generate outcomes; strategies never see them. Applying changes resets all histories.")
         with st.form("settings"):
             rates = [st.slider(f"{a} true CTR (%)", 0, 100, int(round(st.session_state.config["rates"][i]*100)), key=f"rate_{i}") / 100 for i, a in enumerate(ARMS)]
-            epsilon = st.slider("Epsilon: random exploration", 0.0, 1.0, st.session_state.config["epsilon"], .01)
-            ucb_scale = st.slider("UCB uncertainty multiplier", 0.0, 3.0, st.session_state.config["ucb_scale"], .1)
-            seed = st.number_input("Random seed", min_value=0, max_value=2**32-1, value=st.session_state.config["seed"], step=1)
+            with st.expander("Reproducibility"):
+                seed = st.number_input("Random seed", min_value=0, max_value=2**32-1, value=st.session_state.config["seed"], step=1, help="The same settings and seed reproduce the same automatic simulation.")
             submitted = st.form_submit_button("Apply settings & reset all")
         if submitted:
-            apply_settings({"rates": rates, "epsilon": epsilon, "ucb_scale": ucb_scale, "seed": int(seed)})
+            apply_settings({**st.session_state.config, "rates": rates, "seed": int(seed)})
             st.rerun()
         show_truth = st.checkbox("Reveal true rates and expected regret", value=True, help="Show the simulator’s hidden ground truth and expected regret. Each browser session has its own history; download CSV to keep it.")
     tabs = st.tabs([*STRATEGIES, "Contextual Thompson", "Compare all three", "Learning guide", "About"])
