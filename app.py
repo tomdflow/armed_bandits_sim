@@ -544,6 +544,44 @@ def show_comparison(show_truth: bool) -> None:
                            "all_bandit_histories.csv", "text/csv", key="download_all")
 
 
+def show_about() -> None:
+    st.subheader("About Bandit Strategy Lab")
+    st.write("I built this project to help me understand multi-armed bandit algorithms while studying them in class. Seeing the decisions, distributions, and calculations change made the ideas easier to follow, so I wanted to share it in case it helps somebody else too.")
+    st.write("It’s a personal learning project that I plan to maintain and improve over time. Try different settings, compare strategies, and use the step-by-step tables to connect the formulas to what happens on the graphs.")
+    source_col, feedback_col = st.columns(2)
+    source_col.link_button("Source code on GitHub", "https://github.com/tomdflow/armed_bandits_sim")
+    feedback_col.link_button("Suggestions and requests", "https://github.com/tomdflow/armed_bandits_sim/issues")
+    st.caption("Found a bug, something unclear, or an idea for another lesson? Open a GitHub issue. A GitHub account is needed to post; discussions are public.")
+    st.markdown("### What you can learn here")
+    st.write("Exploration versus exploitation, learning from feedback on only the option you chose, confidence bonuses, Bayesian updates, posterior sampling, and expected regret. The ads are an example: the same ideas apply to choosing among other options with uncertain rewards.")
+    with st.expander("Assumptions and scope"):
+        st.markdown("""
+- **Three fixed options and binary rewards:** automatic outcomes are independent click/no-click draws with a fixed probability for each ad. Other reward types, changing rates, delayed feedback, and changing available options are outside the current simulation.
+- **Three core strategies:** fixed-epsilon greedy, UCB1-style confidence bonuses with an adjustable multiplier, and Beta–Bernoulli Thompson sampling. Their behavior in one run does not establish which strategy is universally best.
+- **A small contextual example:** New/Returning is one binary feature. Each ad learns separate Beta beliefs for the two visitor types, then transforms their sampled rates into baseline and effect weights. This is an exact special case; it does not learn a general linear model or share evidence across visitor types.
+- **Comparison limits:** manual outcomes are useful for teaching updates, but can contradict the simulator’s rates. Reset before an automatic comparison, use equal visitor totals, and try several seeds.
+- **Session history:** simulations live in the current session. Download CSV to keep a run before resetting or leaving.
+""")
+    with st.expander("Other bandit methods to explore"):
+        st.markdown("""
+These are ideas for future lessons, not algorithms implemented in this app:
+
+- **Random and greedy baselines:** show why exploring and learning can matter.
+- **KL-UCB:** a confidence-bound method that uses the reward distribution more specifically; a natural next lesson for binary rewards.
+- **LinUCB:** learn from richer feature vectors and show how context changes the decision.
+- **Sliding-window or discounted methods:** forget old observations when the best option changes over time. This needs a changing-rate environment too.
+- **EXP3:** explore the adversarial bandit setting, where rewards need not come from fixed probability distributions. Its usual comparator is the best fixed option in hindsight.
+""")
+    with st.expander("Further reading"):
+        st.markdown("""
+- [Bandit survey: stochastic and nonstochastic settings](https://arxiv.org/abs/1204.5721)
+- [KL-UCB](https://proceedings.mlr.press/v19/garivier11a.html)
+- [Contextual UCB with linear payoffs](https://proceedings.mlr.press/v15/chu11a.html)
+- [Thompson sampling with linear payoffs](https://proceedings.mlr.press/v28/agrawal13.html)
+- [Learning under non-stationarity](https://proceedings.mlr.press/v89/cheung19b.html)
+""")
+
+
 def main() -> None:
     st.set_page_config(page_title="Bandit Strategy Lab", page_icon="🎰", layout="wide")
     st.title("Bandit Strategy Lab")
@@ -562,7 +600,7 @@ def main() -> None:
             apply_settings({"rates": rates, "epsilon": epsilon, "ucb_scale": ucb_scale, "seed": int(seed)})
             st.rerun()
         show_truth = st.checkbox("Reveal true rates and expected regret", value=True, help="Show the simulator’s hidden ground truth and expected regret. Each browser session has its own history; download CSV to keep it.")
-    tabs = st.tabs([*STRATEGIES, "Contextual Thompson", "Compare all three", "How to use this in class"])
+    tabs = st.tabs([*STRATEGIES, "Contextual Thompson", "Compare all three", "Learning guide", "About"])
     for tab, strategy in zip(tabs[:3], STRATEGIES):
         with tab:
             show_strategy(strategy, show_truth)
@@ -572,7 +610,7 @@ def main() -> None:
         show_comparison(show_truth)
     with tabs[5]:
         st.markdown("""
-### A short classroom experiment
+### Try these experiments
 1. In **Thompson sampling**, record a click, then a non-click. Watch how the curve and Beta counts change. The next visitor's draws may change even when the curves barely move.
 2. In **UCB**, simulate the first three visitors. Each ad gets a turn; then the algorithm uses the CTR plus its uncertainty bonus.
 3. In **Epsilon-greedy**, compare epsilon = 0, 0.1, and 1 in separate fresh runs. Zero can stop exploration too early; one keeps choosing randomly.
@@ -596,6 +634,9 @@ Share `app.py` and install `streamlit`, `numpy`, `pandas`, and `plotly` (or use 
 
 Implementation references: [Streamlit charts](https://docs.streamlit.io/develop/api-reference/charts/st.plotly_chart) · [Streamlit app testing](https://docs.streamlit.io/develop/api-reference/app-testing/st.testing.v1.apptest)
 """)
+
+    with tabs[6]:
+        show_about()
 
 
 if __name__ == "__main__":
