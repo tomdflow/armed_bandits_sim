@@ -297,12 +297,12 @@ def show_contextual(show_truth: bool) -> None:
     rows = []
     for i, label in enumerate(ARMS):
         b, e = decision["weights"][i]
-        rows.append({"Ad": label, "Sampled baseline (θ₀)": f"{b:.4f}",
+        rows.append({"Next visitor": "← selected" if i == decision["arm"] else "",
+                     "Ad": label, "Sampled baseline (θ₀)": f"{b:.4f}",
                      "Returning feature (x)": returning, "Sampled returning effect (θ₁)": f"{e:+.4f}",
                      "Contribution = x × θ₁": f"{returning} × ({e:+.4f}) = {returning*e:+.4f}",
                      "Calculation = θ₀ + x × θ₁": f"{b:.4f} + ({returning*e:+.4f}) = {decision['scores'][i]:.4f}",
-                     "Next decision value": f"{decision['scores'][i]:.4f}",
-                     "Next visitor": "← selected" if i == decision["arm"] else ""})
+                     "Next decision value": f"{decision['scores'][i]:.4f}"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     st.caption("Read left to right: baseline + (visitor feature × returning effect) = decision score. New visitors have x = 0; returning visitors have x = 1. Values are rounded for display; selection uses full precision.")
     st.subheader("Distributions behind the sampled weights")
@@ -385,7 +385,8 @@ def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.Data
     for i, name in enumerate(ARMS):
         n, clicks = int(run["counts"][i]), int(run["clicks"][i])
         mean, score = float(decision["means"][i]), float(decision["scores"][i])
-        row = {"Ad": name, "Views (n)": n, "Clicks": clicks, "Non-clicks": n-clicks,
+        row = {"Next visitor": "← selected" if decision["arm"] == i else "",
+               "Ad": name, "Views (n)": n, "Clicks": clicks, "Non-clicks": n-clicks,
                "CTR calculation": f"{clicks} / {n} = {mean:.4f}" if n else "No views → estimate 0",
                "Observed CTR": f"{mean:.2%}" if n else "No observations"}
         if strategy == "Thompson sampling":
@@ -414,7 +415,6 @@ def table_for(run: dict, decision: dict, strategy: str, config: dict) -> pd.Data
                         "Decision step": ("u < ε → random ad (CTR does not rank this choice)" if exploring
                                           else "u ≥ ε → highest observed CTR; random tie-break")})
         row["Next decision value"] = "∞ (untried: priority)" if np.isinf(score) else f"{score:.4f}"
-        row["Next visitor"] = "← selected" if decision["arm"] == i else ""
         rows.append(row)
     return pd.DataFrame(rows)
 
